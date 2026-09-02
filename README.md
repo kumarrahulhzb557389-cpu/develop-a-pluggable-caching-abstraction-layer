@@ -14,6 +14,8 @@ This library solves the problem by providing:
 - **Normalized Reliability Layer**: Unified exception hierarchy (`CacheConnectionError`, `CacheTimeoutError`, `CacheValidationError`, etc.) mapping backend-specific errors into predictable domain exceptions.
 - **Portable Serialization**: Type-preserving, vendor-neutral serialization handling primitives (`str`, `int`, `float`, `bool`, `None`, `bytes`) and JSON-serializable complex data structures.
 - **Connection Pooling & Health Checks**: Production-ready connection pooling and latency-aware health checks for both backends.
+- **Configuration-Driven Factory**: Easily instantiate providers and services via environment variables (`CACHE_BACKEND`, `REDIS_HOST`, `MEMCACHED_HOST`, etc.) or dictionary configs.
+- **REST API & Interactive Demo**: Built-in FastAPI server and rich interactive CLI demo harness.
 
 ---
 
@@ -25,7 +27,7 @@ flowchart TD
     B --> C[Validate Request]
     C -->|Invalid| E[Return Validation Error]
     C -->|Valid| D[CacheProvider Contract]
-    D --> F[Provider Factory / Adapter]
+    D --> F[Provider Factory / Configuration]
     F -->|Redis| G[Redis Adapter]
     F -->|Memcached| H[Memcached Adapter]
     G --> I[Redis Connection Pool]
@@ -47,8 +49,11 @@ flowchart TD
 ```text
 ├── cache_layer/
 │   ├── __init__.py           # Public exports
+│   ├── api.py                # FastAPI REST API endpoints
+│   ├── config.py             # CacheConfig, RedisConfig, MemcachedConfig
 │   ├── contract.py           # CacheProvider ABC interface
 │   ├── exceptions.py         # Normalized exception hierarchy
+│   ├── factory.py            # ProviderFactory (config-driven instantiation)
 │   ├── serializer.py         # PortableJsonSerializer with type preservation
 │   ├── validation.py         # Key, TTL, and namespace validation engine
 │   ├── service.py            # CacheService coordinator
@@ -57,12 +62,16 @@ flowchart TD
 │       ├── redis_adapter.py      # Pooled Redis client adapter
 │       └── memcached_adapter.py  # Pooled pymemcache adapter
 ├── tests/
+│   ├── test_api.py               # REST API endpoint tests (TestClient)
 │   ├── test_cache_service.py     # End-to-end integration & interchangeability tests
+│   ├── test_config_and_factory.py# Configuration & ProviderFactory tests
+│   ├── test_contract_suite.py    # Universal contract test suite for all adapters
 │   ├── test_exceptions.py        # Exception hierarchy tests
 │   ├── test_memcached_adapter.py # Memcached adapter unit & error injection tests
 │   ├── test_redis_adapter.py     # Redis adapter unit & error injection tests
 │   ├── test_serializer.py        # Portable serializer tests
 │   └── test_validation.py        # Key/TTL validation tests
+├── demo.py                   # Interactive Demo Script & test harness
 ├── ARCHITECTURE.md           # Technical baseline & architecture specifications
 ├── PRD.md                    # Product requirements document
 ├── PROGRESS.md               # Task tracking & decisions log
@@ -74,67 +83,56 @@ flowchart TD
 
 ## 📦 Installation & Requirements
 
-### Prerequisites
-- Python 3.9+
-- Redis Server (optional for local live backend testing)
-- Memcached Server (optional for local live backend testing)
-
 ### Dependencies
 Install the required dependencies:
 
 ```bash
-pip install redis pymemcache pytest
+pip install redis pymemcache fastapi uvicorn httpx pytest
 ```
 
 ---
 
 ## 💻 Usage Examples
 
-### 1. Basic Usage with Redis
+### 1. Configuration-Driven Initialization via `ProviderFactory`
 
 ```python
-from cache_layer import CacheService, RedisAdapter
+from cache_layer import ProviderFactory, CacheConfig
 
-# Initialize Redis adapter with connection pooling
-redis_adapter = RedisAdapter(
-    host="localhost",
-    port=6379,
-    db=0,
-    socket_timeout=2.0
-)
+# Create directly from environment variables:
+# export CACHE_BACKEND=redis
+# export CACHE_NAMESPACE=my_service
+cache = ProviderFactory.create_service()
 
-# Initialize CacheService
-with CacheService(provider=redis_adapter, namespace="app_v1") as cache:
-    # Set with TTL (300 seconds)
-    cache.set("user:101:profile", {"name": "Alice", "role": "admin"}, ttl=300)
-    
-    # Get value
-    profile = cache.get("user:101:profile")
-    print(profile)  # {'name': 'Alice', 'role': 'admin'}
-    
-    # Delete key
-    cache.delete("user:101:profile")
+# Or create from explicit config dictionary:
+config = {
+    "backend": "memcached",
+    "namespace": "my_service",
+    "memcached": {"host": "localhost", "port": 11211}
+}
+cache = ProviderFactory.create_service(config)
 ```
 
-### 2. Switching to Memcached (Identical Application Calls)
+### 2. Basic CRUD & Type Preservation
 
 ```python
-from cache_layer import CacheService, MemcachedAdapter
+with cache:
+    # Store string
+    cache.set("session_id", "abc-123", ttl=3600)
 
-# Initialize Memcached adapter with connection pooling
-memcached_adapter = MemcachedAdapter(
-    host="localhost",
-    port=11211,
-    connect_timeout=2.0,
-    timeout=2.0
-)
+    # Store complex JSON dict
+    cache.set("user:101:profile", {
+        "name": "Sarah Connor",
+        "roles": ["admin"],
+        "active": True
+    }, ttl=600)
 
-# The exact same CacheService API calls work without any changes
-with CacheService(provider=memcached_adapter, namespace="app_v1") as cache:
-    cache.set("user:101:profile", {"name": "Alice", "role": "admin"}, ttl=300)
+    # Retrieve values
     profile = cache.get("user:101:profile")
-    print(profile)
-    cache.delete("user:101:profile")
+    print(profile["name"])  # 'Sarah Connor'
+
+    # Delete key
+    cache.delete("session_id")
 ```
 
 ### 3. Health Checks
@@ -146,7 +144,7 @@ print(health)
 # {
 #     "status": "healthy",
 #     "provider": "redis",
-#     "latency_ms": 1.25,
+#     "latency_ms": 0.85,
 #     "details": {"host": "localhost", "port": 6379, "db": 0}
 # }
 ```
@@ -164,20 +162,56 @@ from cache_layer import (
 try:
     cache.get("invalid key with spaces")
 except CacheValidationError as e:
-    print(f"Validation failed: {e}")
+    print(f"Validation error: {e}")
 except CacheConnectionError as e:
-    print(f"Connection failed: {e}")
+    print(f"Connection error: {e}")
 except CacheTimeoutError as e:
-    print(f"Operation timed out: {e}")
+    print(f"Timeout error: {e}")
 except CacheError as e:
     print(f"General cache error: {e}")
 ```
 
 ---
 
+## 🌐 Running the REST API Server
+
+Start the FastAPI application with Uvicorn:
+
+```bash
+uvicorn cache_layer.api:app --reload --port 8000
+```
+
+### API Endpoints
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Backend health check and latency report |
+| `GET` | `/cache/info` | Current active backend and namespace info |
+| `GET` | `/cache/{key}` | Retrieve cached value (`404` if not found) |
+| `PUT` | `/cache/{key}` | Store value with optional `ttl` |
+| `DELETE` | `/cache/{key}` | Delete specific key |
+| `DELETE` | `/cache` | Clear entire cache store / namespace |
+| `POST` | `/cache/switch` | Dynamically switch backend provider at runtime |
+
+---
+
+## 🎬 Running the Interactive Demo
+
+Execute the interactive demo script:
+
+```bash
+python demo.py
+```
+
+To run against live Redis and Memcached services:
+```bash
+python demo.py --live
+```
+
+---
+
 ## 🧪 Running Tests
 
-Execute the comprehensive test suite with `pytest`:
+Execute the complete test suite (33 unit, integration, and contract tests):
 
 ```bash
 python -m pytest -v

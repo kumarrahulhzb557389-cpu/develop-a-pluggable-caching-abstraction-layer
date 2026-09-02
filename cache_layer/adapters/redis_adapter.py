@@ -73,11 +73,11 @@ class RedisAdapter(CacheProvider):
         return "redis"
 
     def _handle_error(self, err: Exception, op_name: str) -> None:
-        if isinstance(err, (RedisConnectionError, BusyLoadingError)):
+        if isinstance(err, (RedisConnectionError, BusyLoadingError, ConnectionRefusedError, ConnectionResetError, ConnectionError)):
             raise CacheConnectionError(
                 f"Redis connection failed during {op_name}: {err}", original_error=err
             ) from err
-        if isinstance(err, RedisTimeoutError):
+        if isinstance(err, (RedisTimeoutError, TimeoutError)):
             raise CacheTimeoutError(
                 f"Redis operation timed out during {op_name}: {err}", original_error=err
             ) from err
