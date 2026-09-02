@@ -4,14 +4,15 @@ import time
 from typing import Any, Dict, Optional
 
 try:
-    import redis
-    from redis.exceptions import (
+    import redis  # type: ignore
+    from redis.exceptions import (  # type: ignore
         BusyLoadingError,
         ConnectionError as RedisConnectionError,
         RedisError,
         TimeoutError as RedisTimeoutError,
     )
 except ImportError:
+
     redis = None
     RedisConnectionError = Exception
     RedisTimeoutError = Exception
@@ -131,14 +132,84 @@ class RedisAdapter(CacheProvider):
         except Exception as err:
             self._handle_error(err, "delete")
 
+    def get_many(self, keys: list) -> Dict[str, Optional[bytes]]:
+        if not keys:
+            return {}
+        try:
+            raw_values = self._client.mget(keys)
+            result = {}
+            for k, val in zip(keys, raw_values):
+                if val is None:
+                    result[k] = None
+                elif isinstance(val, memoryview):
+                    result[k] = val.tobytes()
+                elif isinstance(val, (bytes, bytearray)):
+                    result[k] = bytes(val)
+                elif isinstance(val, str):
+                    result[k] = val.encode("utf-8")
+                else:
+                    result[k] = bytes(val)
+            return result
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
+        except Exception as err:
+            self._handle_error(err, "get_many")
+
+    def set_many(self, mapping: Dict[str, bytes], ttl: Optional[int] = None) -> bool:
+        if not mapping:
+            return True
+        try:
+            if ttl == 0:
+                self._client.delete(*mapping.keys())
+                return True
+            if ttl is not None and ttl > 0:
+                pipe = self._client.pipeline()
+                for k, v in mapping.items():
+                    pipe.set(k, v, ex=ttl)
+                pipe.execute()
+            else:
+                self._client.mset(mapping)
+            return True
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
+        except Exception as err:
+            self._handle_error(err, "set_many")
+
+    def delete_many(self, keys: list) -> bool:
+        if not keys:
+            return True
+        try:
+            self._client.delete(*keys)
+            return True
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
+        except Exception as err:
+            self._handle_error(err, "delete_many")
+
+
     def clear(self) -> bool:
         try:
             self._client.flushdb()
             return True
         except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
             raise
+    def stats(self) -> Dict[str, Any]:
+        try:
+            info = self._client.info()
+            return {
+                "provider": self.provider_name,
+                "hits": info.get("keyspace_hits", 0),
+                "misses": info.get("keyspace_misses", 0),
+                "bytes_used": info.get("used_memory", 0),
+                "connected_clients": info.get("connected_clients", 0),
+                "uptime_seconds": info.get("uptime_in_seconds", 0),
+                "total_commands": info.get("total_commands_processed", 0),
+                "raw": info,
+            }
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
         except Exception as err:
-            self._handle_error(err, "clear")
+            self._handle_error(err, "stats")
 
     def health_check(self) -> Dict[str, Any]:
         start = time.perf_counter()
@@ -146,18 +217,28 @@ class RedisAdapter(CacheProvider):
             ping_ok = self._client.ping()
             latency_ms = (time.perf_counter() - start) * 1000.0
             if ping_ok:
+                server_version = "unknown"
+                try:
+                    info = self._client.info("server")
+                    server_version = info.get("redis_version", "unknown")
+                except Exception:
+                    pass
+
                 return {
                     "status": "healthy",
+                    "backend": self.provider_name,
                     "provider": self.provider_name,
                     "latency_ms": round(latency_ms, 3),
                     "details": {
                         "host": self._host,
                         "port": self._port,
                         "db": self._db,
+                        "server_version": server_version,
                     },
                 }
             return {
                 "status": "unhealthy",
+                "backend": self.provider_name,
                 "provider": self.provider_name,
                 "latency_ms": round(latency_ms, 3),
                 "details": {"error": "Ping returned False"},
@@ -166,10 +247,17 @@ class RedisAdapter(CacheProvider):
             latency_ms = (time.perf_counter() - start) * 1000.0
             return {
                 "status": "unhealthy",
+                "backend": self.provider_name,
                 "provider": self.provider_name,
                 "latency_ms": round(latency_ms, 3),
-                "details": {"error": str(err), "error_type": type(err).__name__},
+                "details": {
+                    "host": self._host,
+                    "port": self._port,
+                    "error": str(err),
+                    "error_type": type(err).__name__,
+                },
             }
+
 
     def close(self) -> None:
         try:

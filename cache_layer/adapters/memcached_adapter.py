@@ -5,15 +5,16 @@ import time
 from typing import Any, Dict, Optional
 
 try:
-    import pymemcache
-    from pymemcache.client.base import PooledClient
-    from pymemcache.exceptions import (
+    import pymemcache  # type: ignore
+    from pymemcache.client.base import PooledClient  # type: ignore
+    from pymemcache.exceptions import (  # type: ignore
         MemcacheClientError,
         MemcacheError,
         MemcacheServerError,
         MemcacheUnknownError,
     )
 except ImportError:
+
     pymemcache = None
     PooledClient = None
     MemcacheError = Exception
@@ -141,6 +142,62 @@ class MemcachedAdapter(CacheProvider):
         except Exception as err:
             self._handle_error(err, "delete")
 
+    def get_many(self, keys: list) -> Dict[str, Optional[bytes]]:
+        if not keys:
+            return {}
+        try:
+            raw_map = self._client.get_many(keys)
+            result = {}
+            for k in keys:
+                val = raw_map.get(k) if isinstance(raw_map, dict) else None
+                if val is None:
+                    result[k] = None
+                elif isinstance(val, memoryview):
+                    result[k] = val.tobytes()
+                elif isinstance(val, (bytes, bytearray)):
+                    result[k] = bytes(val)
+                elif isinstance(val, str):
+                    result[k] = val.encode("utf-8")
+                else:
+                    result[k] = bytes(val)
+            return result
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
+        except Exception as err:
+            self._handle_error(err, "get_many")
+
+    def set_many(self, mapping: Dict[str, bytes], ttl: Optional[int] = None) -> bool:
+        if not mapping:
+            return True
+        try:
+            if ttl == 0:
+                for k in mapping.keys():
+                    self._client.delete(k)
+                return True
+            expire = ttl if ttl is not None else 0
+            failed_keys = self._client.set_many(mapping, expire=expire)
+            return len(failed_keys) == 0 if isinstance(failed_keys, list) else True
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
+        except Exception as err:
+            self._handle_error(err, "set_many")
+
+    def delete_many(self, keys: list) -> bool:
+        if not keys:
+            return True
+        try:
+            if hasattr(self._client, "delete_many"):
+                self._client.delete_many(keys)
+            else:
+                for k in keys:
+                    self._client.delete(k)
+            return True
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
+        except Exception as err:
+            self._handle_error(err, "delete_many")
+
+
     def clear(self) -> bool:
         try:
             self._client.flush_all()
@@ -150,6 +207,37 @@ class MemcachedAdapter(CacheProvider):
         except Exception as err:
             self._handle_error(err, "clear")
 
+    def stats(self) -> Dict[str, Any]:
+        try:
+            raw_stats = self._client.stats()
+            normalized = {}
+            if isinstance(raw_stats, dict):
+                for k, v in raw_stats.items():
+                    key_str = k.decode("utf-8", errors="replace") if isinstance(k, (bytes, bytearray)) else str(k)
+                    val_str = v.decode("utf-8", errors="replace") if isinstance(v, (bytes, bytearray)) else v
+                    try:
+                        normalized[key_str] = int(val_str)
+                    except (ValueError, TypeError):
+                        try:
+                            normalized[key_str] = float(val_str)
+                        except (ValueError, TypeError):
+                            normalized[key_str] = val_str
+
+            return {
+                "provider": self.provider_name,
+                "hits": normalized.get("get_hits", 0),
+                "misses": normalized.get("get_misses", 0),
+                "items_count": normalized.get("curr_items", 0),
+                "bytes_used": normalized.get("bytes", 0),
+                "uptime_seconds": normalized.get("uptime", 0),
+                "total_commands": normalized.get("cmd_get", 0) + normalized.get("cmd_set", 0),
+                "raw": normalized,
+            }
+        except (CacheConnectionError, CacheTimeoutError, CacheBackendError):
+            raise
+        except Exception as err:
+            self._handle_error(err, "stats")
+
     def health_check(self) -> Dict[str, Any]:
         start = time.perf_counter()
         try:
@@ -157,6 +245,7 @@ class MemcachedAdapter(CacheProvider):
             latency_ms = (time.perf_counter() - start) * 1000.0
             return {
                 "status": "healthy",
+                "backend": self.provider_name,
                 "provider": self.provider_name,
                 "latency_ms": round(latency_ms, 3),
                 "details": {
@@ -173,10 +262,17 @@ class MemcachedAdapter(CacheProvider):
             latency_ms = (time.perf_counter() - start) * 1000.0
             return {
                 "status": "unhealthy",
+                "backend": self.provider_name,
                 "provider": self.provider_name,
                 "latency_ms": round(latency_ms, 3),
-                "details": {"error": str(err), "error_type": type(err).__name__},
+                "details": {
+                    "host": self._host,
+                    "port": self._port,
+                    "error": str(err),
+                    "error_type": type(err).__name__,
+                },
             }
+
 
     def close(self) -> None:
         try:

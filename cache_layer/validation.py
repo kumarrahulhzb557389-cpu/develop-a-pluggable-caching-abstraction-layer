@@ -1,7 +1,8 @@
 """Normalized validation engine for cache keys, TTL values, and namespaces."""
 
 import re
-from typing import Optional
+from typing import Any, Dict, List, Optional
+
 
 from cache_layer.exceptions import CacheValidationError
 
@@ -52,7 +53,7 @@ def validate_ttl(ttl: Optional[int]) -> Optional[int]:
         The validated TTL integer or None.
 
     Raises:
-        CacheValidationError: If TTL is invalid.
+        CacheValidationError: If TTL is invalid, negative, boolean, or not an integer.
     """
     if ttl is None:
         return None
@@ -64,6 +65,48 @@ def validate_ttl(ttl: Optional[int]) -> Optional[int]:
         raise CacheValidationError(f"TTL cannot be negative: {ttl}")
 
     return ttl
+
+
+
+def validate_keys(keys: Any) -> list:
+    """Validate an iterable collection of cache keys.
+
+    Args:
+        keys: Iterable of keys.
+
+    Returns:
+        List of validated keys.
+
+    Raises:
+        CacheValidationError: If keys is not a collection, is empty, or contains invalid keys.
+    """
+    if not isinstance(keys, (list, tuple, set)):
+        raise CacheValidationError(f"Keys collection must be a list, tuple or set, got {type(keys).__name__}")
+    if not keys:
+        raise CacheValidationError("Keys collection cannot be empty")
+    return [validate_key(k) for k in keys]
+
+
+def validate_mapping(mapping: Any) -> dict:
+    """Validate a key-value dictionary for batch operations.
+
+    Args:
+        mapping: Dictionary of key-value pairs.
+
+    Returns:
+        Validated dictionary.
+
+    Raises:
+        CacheValidationError: If mapping is not a dict, is empty, or contains invalid keys.
+    """
+    if not isinstance(mapping, dict):
+        raise CacheValidationError(f"Batch mapping must be a dict, got {type(mapping).__name__}")
+    if not mapping:
+        raise CacheValidationError("Batch mapping cannot be empty")
+    for k in mapping.keys():
+        validate_key(k)
+    return mapping
+
 
 
 def validate_namespace(namespace: Optional[str]) -> Optional[str]:

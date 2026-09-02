@@ -70,8 +70,51 @@ class CacheProvider(ABC):
         """
         pass
 
+    def get_many(self, keys: list) -> Dict[str, Optional[bytes]]:
+        """Retrieve raw serialized byte payloads for multiple keys.
+
+        Args:
+            keys: List of cache keys.
+
+        Returns:
+            Dictionary mapping each key to bytes or None.
+        """
+        return {k: self.get(k) for k in keys}
+
+    def set_many(self, mapping: Dict[str, bytes], ttl: Optional[int] = None) -> bool:
+        """Store multiple key-value byte pairs with optional TTL.
+
+        Args:
+            mapping: Dictionary mapping cache keys to byte payloads.
+            ttl: Optional time-to-live in seconds.
+
+        Returns:
+            True if all writes succeeded, False otherwise.
+        """
+        all_ok = True
+        for k, v in mapping.items():
+            if not self.set(k, v, ttl=ttl):
+                all_ok = False
+        return all_ok
+
+    def delete_many(self, keys: list) -> bool:
+        """Delete multiple keys from the cache store.
+
+        Args:
+            keys: List of cache keys to remove.
+
+        Returns:
+            True if operations completed successfully.
+        """
+        all_ok = True
+        for k in keys:
+            if not self.delete(k):
+                all_ok = False
+        return all_ok
+
     @abstractmethod
     def clear(self) -> bool:
+
         """Clear all entries in the configured cache store or namespace.
 
         Returns:
@@ -83,6 +126,23 @@ class CacheProvider(ABC):
             CacheBackendError: For other unexpected backend errors.
         """
         pass
+
+    def stats(self) -> Dict[str, Any]:
+        """Retrieve operational metrics and provider statistics.
+
+        Returns:
+            A dictionary containing normalized backend metrics:
+            {
+                "provider": str,
+                ...
+            }
+
+        Raises:
+            CacheConnectionError: If connection to backend fails.
+            CacheTimeoutError: If operation times out.
+            CacheBackendError: For other unexpected backend errors.
+        """
+        return {"provider": self.provider_name}
 
     @abstractmethod
     def health_check(self) -> Dict[str, Any]:
@@ -103,3 +163,4 @@ class CacheProvider(ABC):
     def close(self) -> None:
         """Clean up and close any open connection pools or network sockets."""
         pass
+

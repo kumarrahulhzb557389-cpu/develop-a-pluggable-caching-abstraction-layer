@@ -5,7 +5,14 @@ from typing import Any, Dict, Optional
 from cache_layer.contract import CacheProvider
 from cache_layer.exceptions import CacheError
 from cache_layer.serializer import PortableJsonSerializer, Serializer
-from cache_layer.validation import validate_key, validate_namespace, validate_ttl
+from cache_layer.validation import (
+    validate_key,
+    validate_keys,
+    validate_mapping,
+    validate_namespace,
+    validate_ttl,
+)
+
 
 
 class CacheService:
@@ -89,13 +96,76 @@ class CacheService:
         full_key = self._format_key(key)
         return self._provider.delete(full_key)
 
+    def get_many(self, keys: list) -> Dict[str, Any]:
+        """Retrieve and deserialize values for multiple keys.
+
+        Args:
+            keys: Iterable of cache keys.
+
+        Returns:
+            Dictionary mapping original cache keys to deserialized values (or None on miss).
+        """
+        valid_keys = validate_keys(keys)
+        key_map = {k: self._format_key(k) for k in valid_keys}
+        formatted_keys = list(key_map.values())
+        raw_results = self._provider.get_many(formatted_keys)
+
+        results = {}
+        for original_k, formatted_k in key_map.items():
+            raw_bytes = raw_results.get(formatted_k)
+            if raw_bytes is None:
+                results[original_k] = None
+            else:
+                results[original_k] = self._serializer.deserialize(raw_bytes)
+        return results
+
+    def set_many(self, mapping: Dict[str, Any], ttl: Optional[int] = None) -> bool:
+        """Serialize and store multiple key-value pairs.
+
+        Args:
+            mapping: Dictionary of key-value pairs.
+            ttl: Optional TTL in seconds for all keys.
+
+        Returns:
+            True if all stored successfully.
+        """
+        valid_mapping = validate_mapping(mapping)
+        validated_ttl = validate_ttl(ttl)
+        raw_mapping = {
+            self._format_key(k): self._serializer.serialize(v)
+            for k, v in valid_mapping.items()
+        }
+        return self._provider.set_many(raw_mapping, ttl=validated_ttl)
+
+    def delete_many(self, keys: list) -> bool:
+        """Delete multiple keys from the cache.
+
+        Args:
+            keys: Iterable of cache keys to remove.
+
+        Returns:
+            True if all deleted or acknowledged.
+        """
+        valid_keys = validate_keys(keys)
+        formatted_keys = [self._format_key(k) for k in valid_keys]
+        return self._provider.delete_many(formatted_keys)
+
     def clear(self) -> bool:
+
         """Clear all entries in the cache store/namespace.
 
         Returns:
             True if cleared successfully.
         """
         return self._provider.clear()
+
+    def stats(self) -> Dict[str, Any]:
+        """Retrieve cache provider statistics.
+
+        Returns:
+            Dictionary containing provider metrics.
+        """
+        return self._provider.stats()
 
     def health_check(self) -> Dict[str, Any]:
         """Check backend connectivity and health."""

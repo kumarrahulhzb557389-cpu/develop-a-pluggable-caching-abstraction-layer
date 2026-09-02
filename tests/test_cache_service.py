@@ -128,3 +128,11 @@ def test_cache_service_context_manager():
         service.set("k", 123)
         assert service.get("k") == 123
     assert provider.closed is True
+
+
+def test_cache_service_stats():
+    provider = InMemoryMockProvider()
+    service = CacheService(provider=provider)
+    stats = service.stats()
+    assert stats["provider"] == "mock"
+
